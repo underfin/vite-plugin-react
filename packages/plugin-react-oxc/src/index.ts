@@ -1,21 +1,17 @@
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readFileSync } from 'node:fs'
-import type { BuildOptions, Plugin, PluginOption } from 'vite'
+import type { BuildOptions, Plugin } from 'vite'
 import {
   addRefreshWrapper,
-  avoidSourceMapOption,
   getPreambleCode,
   runtimePublicPath,
   silenceUseClientWarning,
 } from '@vitejs/react-common'
+import { exactRegex } from '@rolldown/pluginutils'
 
 const _dirname = dirname(fileURLToPath(import.meta.url))
-
-const refreshRuntimePath = globalThis.__IS_BUILD__
-  ? join(_dirname, 'refresh-runtime.js')
-  : // eslint-disable-next-line n/no-unsupported-features/node-builtins -- only used in dev
-    fileURLToPath(import.meta.resolve('@vitejs/react-common/refresh-runtime'))
+const refreshRuntimePath = join(_dirname, 'refresh-runtime.js')
 
 export interface Options {
   include?: string | RegExp | Array<string | RegExp>
@@ -28,17 +24,11 @@ export interface Options {
 }
 
 const defaultIncludeRE = /\.[tj]sx?(?:$|\?)/
+const defaultExcludeRE = /\/node_modules\//
 
-export default function viteReact(opts: Options = {}): PluginOption[] {
+export default function viteReact(opts: Options = {}): Plugin[] {
   const include = opts.include ?? defaultIncludeRE
-  const exclude = [
-    ...(Array.isArray(opts.exclude)
-      ? opts.exclude
-      : opts.exclude
-        ? [opts.exclude]
-        : []),
-    /\/node_modules\//,
-  ]
+  const exclude = opts.exclude ?? defaultExcludeRE
 
   const jsxImportSource = opts.jsxImportSource ?? 'react'
   const jsxImportRuntime = `${jsxImportSource}/jsx-runtime`
@@ -67,9 +57,16 @@ export default function viteReact(opts: Options = {}): PluginOption[] {
             jsxImportDevRuntime,
             jsxImportRuntime,
           ],
-          rollupOptions: { jsx: { mode: 'automatic' } },
+          rollupOptions: { transform: { jsx: { runtime: 'automatic' } } },
         },
       }
+    },
+    configResolved(config) {
+      config.logger.warn(
+        '@vitejs/plugin-react-oxc is deprecated. ' +
+          'Please use @vitejs/plugin-react instead. ' +
+          'The changes of this plugin is now included in @vitejs/plugin-react.',
+      )
     },
     options() {
       if (!this.meta.rolldownVersion) {
@@ -77,6 +74,22 @@ export default function viteReact(opts: Options = {}): PluginOption[] {
           '@vitejs/plugin-react-oxc requires rolldown-vite to be used. ' +
             'See https://vitejs.dev/guide/rolldown for more details about rolldown-vite.',
         )
+      }
+    },
+  }
+
+  const viteConfigPost: Plugin = {
+    name: 'vite:react-oxc:config-post',
+    enforce: 'post',
+    config(userConfig) {
+      if (userConfig.server?.hmr === false) {
+        return {
+          oxc: {
+            jsx: {
+              refresh: false,
+            },
+          },
+        }
       }
     },
   }
@@ -102,11 +115,13 @@ export default function viteReact(opts: Options = {}): PluginOption[] {
   }
 
   let skipFastRefresh = false
+  let base: string
 
   const viteRefreshWrapper: Plugin = {
     name: 'vite:react-oxc:refresh-wrapper',
     apply: 'serve',
     configResolved(config) {
+      base = config.base
       skipFastRefresh = config.isProduction || config.server.hmr === false
     },
     transform: {
@@ -126,35 +141,27 @@ export default function viteReact(opts: Options = {}): PluginOption[] {
             code.includes(jsxImportRuntime))
         if (!useFastRefresh) return
 
-        const { code: newCode } = addRefreshWrapper(
-          code,
-          avoidSourceMapOption,
-          '@vitejs/plugin-react-oxc',
-          id,
-        )
-        return { code: newCode, map: null }
+        const newCode = addRefreshWrapper(code, '@vitejs/plugin-react-oxc', id)
+        return newCode ? { code: newCode, map: null } : undefined
       },
     },
-    transformIndexHtml(_, config) {
-      if (!skipFastRefresh)
-        return [
-          {
-            tag: 'script',
-            attrs: { type: 'module' },
-            children: getPreambleCode(config.server!.config.base),
-          },
-        ]
+    transformIndexHtml: {
+      // TODO: maybe we can inject this to entrypoints instead of index.html?
+      handler() {
+        if (!skipFastRefresh)
+          return [
+            {
+              tag: 'script',
+              attrs: { type: 'module' },
+              children: getPreambleCode(base),
+            },
+          ]
+      },
+      // In unbundled mode, Vite transforms any requests.
+      // But in full bundled mode, Vite only transforms / bundles the scripts injected in `order: 'pre'`.
+      order: 'pre',
     },
   }
 
-  return [viteConfig, viteRefreshRuntime, viteRefreshWrapper]
-}
-
-function exactRegex(input: string): RegExp {
-  return new RegExp(`^${escapeRegex(input)}$`)
-}
-
-const escapeRegexRE = /[-/\\^$*+?.()|[\]{}]/g
-function escapeRegex(str: string): string {
-  return str.replace(escapeRegexRE, '\\$&')
+  return [viteConfig, viteConfigPost, viteRefreshRuntime, viteRefreshWrapper]
 }

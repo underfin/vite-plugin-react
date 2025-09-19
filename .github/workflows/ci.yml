@@ -29,7 +29,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        node_version: [18, 20, 22]
+        node_version: [20, 22, 24]
         include:
           # Active LTS + other OS
           - os: macos-latest
@@ -41,7 +41,7 @@ jobs:
     name: "Build&Test: node-${{ matrix.node_version }}, ${{ matrix.os }}"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install pnpm
         uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
@@ -87,11 +87,25 @@ jobs:
       - name: Test serve
         run: pnpm run test-serve
 
+      - name: Test full bundle mode serve
+        run: pnpm run test-full-bundle-mode
+
       - name: Test build
         run: pnpm run test-build
 
       - name: Test SWC
         run: pnpm --filter ./packages/plugin-react-swc run test
+
+      - name: Setup rolldown-vite
+        run: |
+          sed -i"" -e "s/overrides:/overrides:\n  vite: catalog:rolldown-vite/" pnpm-workspace.yaml
+          pnpm i --no-frozen-lockfile
+
+      - name: Test serve (rolldown-vite)
+        run: pnpm run test-serve
+
+      - name: Test build (rolldown-vite)
+        run: pnpm run test-build
 
   lint:
     if: github.repository == 'vitejs/vite-plugin-react'
@@ -99,7 +113,7 @@ jobs:
     runs-on: ubuntu-latest
     name: "Lint: node-20, ubuntu-latest"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 

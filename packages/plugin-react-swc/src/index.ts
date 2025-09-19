@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { SourceMapPayload } from 'node:module'
 import { createRequire } from 'node:module'
 import {
   type JscTarget,
@@ -11,13 +10,15 @@ import {
   type Options as SWCOptions,
   transform,
 } from '@swc/core'
-import type { PluginOption } from 'vite'
+import type { Plugin } from 'vite'
 import {
   addRefreshWrapper,
   getPreambleCode,
   runtimePublicPath,
   silenceUseClientWarning,
 } from '@vitejs/react-common'
+import * as vite from 'vite'
+import { exactRegex } from '@rolldown/pluginutils'
 
 /* eslint-disable no-restricted-globals */
 const _dirname =
@@ -74,10 +75,17 @@ type Options = {
    * feature doesn't work is not fun, so we won't provide support for it, hence the name `useAtYourOwnRisk`
    */
   useAtYourOwnRisk_mutateSwcOptions?: (options: SWCOptions) => void
+
+  /**
+   * If set, disables the recommendation to use `@vitejs/plugin-react`
+   */
+  disableOxcRecommendation?: boolean
 }
 
-const react = (_options?: Options): PluginOption[] => {
+const react = (_options?: Options): Plugin[] => {
   let hmrDisabled = false
+  let base: string
+  let viteCacheRoot: string | undefined
   const options = {
     jsxImportSource: _options?.jsxImportSource ?? 'react',
     tsDecorators: _options?.tsDecorators,
@@ -89,6 +97,7 @@ const react = (_options?: Options): PluginOption[] => {
     reactRefreshHost: _options?.reactRefreshHost,
     useAtYourOwnRisk_mutateSwcOptions:
       _options?.useAtYourOwnRisk_mutateSwcOptions,
+    disableOxcRecommendation: _options?.disableOxcRecommendation,
   }
 
   return [
@@ -96,14 +105,23 @@ const react = (_options?: Options): PluginOption[] => {
       name: 'vite:react-swc:resolve-runtime',
       apply: 'serve',
       enforce: 'pre', // Run before Vite default resolve to avoid syscalls
-      resolveId: (id) => (id === runtimePublicPath ? id : undefined),
-      load: (id) =>
-        id === runtimePublicPath
-          ? readFileSync(join(_dirname, 'refresh-runtime.js'), 'utf-8').replace(
-              /__README_URL__/g,
-              'https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react-swc',
-            )
-          : undefined,
+      resolveId: {
+        filter: { id: exactRegex(runtimePublicPath) },
+        handler: (id) => (id === runtimePublicPath ? id : undefined),
+      },
+      load: {
+        filter: { id: exactRegex(runtimePublicPath) },
+        handler: (id) =>
+          id === runtimePublicPath
+            ? readFileSync(
+                join(_dirname, 'refresh-runtime.js'),
+                'utf-8',
+              ).replace(
+                /__README_URL__/g,
+                'https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react-swc',
+              )
+            : undefined,
+      },
     },
     {
       name: 'vite:react-swc',
@@ -114,11 +132,18 @@ const react = (_options?: Options): PluginOption[] => {
         oxc: false,
         optimizeDeps: {
           include: [`${options.jsxImportSource}/jsx-dev-runtime`],
-          esbuildOptions: { jsx: 'automatic' },
+          ...('rolldownVersion' in vite
+            ? {
+                rollupOptions: { transform: { jsx: { runtime: 'automatic' } } },
+              }
+            : { esbuildOptions: { jsx: 'automatic' } }),
         },
       }),
       configResolved(config) {
+        base = config.base
+        viteCacheRoot = config.cacheDir
         if (config.server.hmr === false) hmrDisabled = true
+
         const mdxIndex = config.plugins.findIndex(
           (p) => p.name === '@mdx-js/rollup',
         )
@@ -131,14 +156,34 @@ const react = (_options?: Options): PluginOption[] => {
             '[vite:react-swc] The MDX plugin should be placed before this plugin',
           )
         }
+
+        if (
+          'rolldownVersion' in vite &&
+          !options.plugins &&
+          !options.useAtYourOwnRisk_mutateSwcOptions &&
+          !options.disableOxcRecommendation
+        ) {
+          config.logger.warn(
+            '[vite:react-swc] We recommend switching to `@vitejs/plugin-react` for improved performance as no swc plugins are used. More information at https://vite.dev/rolldown',
+          )
+        }
       },
-      transformIndexHtml: (_, config) => [
-        {
-          tag: 'script',
-          attrs: { type: 'module' },
-          children: getPreambleCode(config.server!.config.base),
+      transformIndexHtml: {
+        // TODO: maybe we can inject this to entrypoints instead of index.html?
+        handler() {
+          if (!hmrDisabled)
+            return [
+              {
+                tag: 'script',
+                attrs: { type: 'module' },
+                children: getPreambleCode(base),
+              },
+            ]
         },
-      ],
+        // In unbundled mode, Vite transforms any requests.
+        // But in full bundled mode, Vite only transforms / bundles the scripts injected in `order: 'pre'`.
+        order: 'pre',
+      },
       async transform(code, _id, transformOptions) {
         const id = _id.split('?')[0]
         const refresh = !transformOptions?.ssr && !hmrDisabled
@@ -148,6 +193,7 @@ const react = (_options?: Options): PluginOption[] => {
           code,
           options.devTarget,
           options,
+          viteCacheRoot,
           {
             refresh,
             development: true,
@@ -158,13 +204,13 @@ const react = (_options?: Options): PluginOption[] => {
         if (!result) return
         if (!refresh) return result
 
-        return addRefreshWrapper<SourceMapPayload>(
+        const newCode = addRefreshWrapper(
           result.code,
-          result.map!,
           '@vitejs/plugin-react-swc',
           id,
           options.reactRefreshHost,
         )
+        return { code: newCode ?? result.code, map: result.map }
       },
     },
     options.plugins
@@ -175,11 +221,21 @@ const react = (_options?: Options): PluginOption[] => {
           config: (userConfig) => ({
             build: silenceUseClientWarning(userConfig),
           }),
+          configResolved(config) {
+            viteCacheRoot = config.cacheDir
+          },
           transform: (code, _id) =>
-            transformWithOptions(_id.split('?')[0], code, 'esnext', options, {
-              runtime: 'automatic',
-              importSource: options.jsxImportSource,
-            }),
+            transformWithOptions(
+              _id.split('?')[0],
+              code,
+              'esnext',
+              options,
+              viteCacheRoot,
+              {
+                runtime: 'automatic',
+                importSource: options.jsxImportSource,
+              },
+            ),
         }
       : {
           name: 'vite:react-swc',
@@ -194,6 +250,9 @@ const react = (_options?: Options): PluginOption[] => {
               },
             },
           }),
+          configResolved(config) {
+            viteCacheRoot = config.cacheDir
+          },
         },
   ]
 }
@@ -203,6 +262,7 @@ const transformWithOptions = async (
   code: string,
   target: JscTarget,
   options: Options,
+  viteCacheRoot: string | undefined,
   reactConfig: ReactConfig,
 ) => {
   const decorators = options?.tsDecorators ?? false
@@ -230,7 +290,10 @@ const transformWithOptions = async (
       jsc: {
         target,
         parser,
-        experimental: { plugins: options.plugins },
+        experimental: {
+          plugins: options.plugins,
+          cacheRoot: join(viteCacheRoot ?? 'node_modules/.vite', '.swc'),
+        },
         transform: {
           useDefineForClassFields: true,
           react: reactConfig,
@@ -258,3 +321,12 @@ const transformWithOptions = async (
 }
 
 export default react
+
+// Compat for require
+function pluginForCjs(this: unknown, options: Options): Plugin[] {
+  return react.call(this, options)
+}
+Object.assign(pluginForCjs, {
+  default: pluginForCjs,
+})
+export { pluginForCjs as 'module.exports' }

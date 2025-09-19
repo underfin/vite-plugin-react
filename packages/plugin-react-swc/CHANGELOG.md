@@ -2,6 +2,83 @@
 
 ## Unreleased
 
+### Set SWC cacheRoot options
+
+This is set to `{viteCacheDir}/swc` and override the default of `.swc`.
+
+### Perf: simplify refresh wrapper generation ([#835](https://github.com/vitejs/vite-plugin-react/pull/835))
+
+## 4.0.1 (2025-08-19)
+
+### Set `optimizeDeps.rollupOptions.transform.jsx` instead of `optimizeDeps.rollupOptions.jsx` for rolldown-vite ([#735](https://github.com/vitejs/vite-plugin-react/pull/735))
+
+`optimizeDeps.rollupOptions.jsx` is going to be deprecated in favor of `optimizeDeps.rollupOptions.transform.jsx`.
+
+## 4.0.0 (2025-08-07)
+
+## 4.0.0-beta.0 (2025-07-28)
+
+### Require Node 20.19+, 22.12+
+
+This plugin now requires Node 20.19+ or 22.12+.
+
+## 3.11.0 (2025-07-18)
+
+### Add HMR support for compound components ([#518](https://github.com/vitejs/vite-plugin-react/pull/518))
+
+HMR now works for compound components like this:
+
+```tsx
+const Root = () => <div>Accordion Root</div>
+const Item = () => <div>Accordion Item</div>
+
+export const Accordion = { Root, Item }
+```
+
+### Return `Plugin[]` instead of `PluginOption[]` ([#537](https://github.com/vitejs/vite-plugin-react/pull/537))
+
+The return type has changed from `react(): PluginOption[]` to more specialized type `react(): Plugin[]`. This allows for type-safe manipulation of plugins, for example:
+
+```tsx
+// previously this causes type errors
+react()
+  .map(p => ({ ...p, applyToEnvironment: e => e.name === 'client' }))
+```
+
+## 3.10.2 (2025-06-10)
+
+### Suggest `@vitejs/plugin-react-oxc` if rolldown-vite is detected [#491](https://github.com/vitejs/vite-plugin-react/pull/491)
+
+Emit a log which recommends `@vitejs/plugin-react-oxc` when `rolldown-vite` is detected to improve performance and use Oxc under the hood. The warning can be disabled by setting `disableOxcRecommendation: true` in the plugin options.
+
+### Use `optimizeDeps.rollupOptions` instead of `optimizeDeps.esbuildOptions` for rolldown-vite [#489](https://github.com/vitejs/vite-plugin-react/pull/489)
+
+This suppresses the warning about `optimizeDeps.esbuildOptions` being deprecated in rolldown-vite.
+
+### Add Vite 7-beta to peerDependencies range [#497](https://github.com/vitejs/vite-plugin-react/pull/497)
+
+React plugins are compatible with Vite 7, this removes the warning when testing the beta.
+
+## 3.10.1 (2025-06-03)
+
+### Add explicit semicolon in preambleCode [#485](https://github.com/vitejs/vite-plugin-react/pull/485)
+
+This fixes an edge case when using HTML minifiers that strips line breaks aggressively.
+
+## 3.10.0 (2025-05-23)
+
+### Add `filter` for rolldown-vite [#470](https://github.com/vitejs/vite-plugin-react/pull/470)
+
+Added `filter` so that it is more performant when running this plugin with rolldown-powered version of Vite.
+
+### Skip HMR preamble in Vitest browser mode [#478](https://github.com/vitejs/vite-plugin-react/pull/478)
+
+This was causing annoying `Sourcemap for "/@react-refresh" points to missing source files` and is unnecessary in test mode.
+
+### Skip HMR for JSX files with hooks [#480](https://github.com/vitejs/vite-plugin-react/pull/480)
+
+This removes the HMR warning for hooks with JSX.
+
 ## 3.9.0 (2025-04-15)
 
 ### Make compatible with rolldown-vite
